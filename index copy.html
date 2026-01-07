@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Giờ Chính Xác +500ms</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            color: white;
+        }
+        
+        .container {
+            text-align: center;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 50px;
+            border-radius: 20px;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+        
+        .time {
+            font-size: 80px;
+            font-weight: 700;
+            margin: 20px 0;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+        }
+        
+        .milliseconds {
+            font-size: 30px;
+            opacity: 0.8;
+        }
+        
+        .date {
+            font-size: 24px;
+            margin-bottom: 10px;
+            opacity: 0.9;
+        }
+        
+        .timezone {
+            font-size: 18px;
+            opacity: 0.8;
+        }
+        
+        .status {
+            margin-top: 20px;
+            font-size: 14px;
+            opacity: 0.7;
+        }
+        
+        .online {
+            color: #4ade80;
+        }
+        
+        .offline {
+            color: #f87171;
+        }
+        
+        .precision {
+            font-size: 12px;
+            margin-top: 10px;
+            opacity: 0.6;
+        }
+        
+        .fast-mode {
+            background: rgba(255, 215, 0, 0.2);
+            padding: 8px 15px;
+            border-radius: 10px;
+            margin-top: 15px;
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Giờ Chính Xác</h1>
+        <div class="date" id="date">Loading...</div>
+        <div class="time">
+            <span id="time">00:00:00</span><span class="milliseconds" id="ms">.000</span>
+        </div>
+        <div class="timezone" id="timezone">UTC+7 (Ho Chi Minh)</div>
+        <div class="fast-mode">⚡ Chế độ nhanh +500ms</div>
+        <div class="status">
+            Trạng thái: <span id="status" class="online">Đồng bộ</span>
+        </div>
+        <div class="precision">Độ chính xác: <span id="precision">0</span> ms</div>
+    </div>
+
+    <script>
+        // Offset nhanh hơn time.is 500ms
+        const FAST_MODE_OFFSET = 500; // milliseconds
+        
+        let serverTimeOffset = 0;
+        let performanceBaseline = 0;
+        let serverTimeAtBaseline = 0;
+        let syncInProgress = false;
+        let offsets = [];
+        const MAX_SYNC_ATTEMPTS = 5;
+        
+        // Lấy thời gian server với offset nhanh hơn
+        function getAccurateServerTime() {
+            const elapsed = performance.now() - performanceBaseline;
+            return serverTimeAtBaseline + elapsed + FAST_MODE_OFFSET;
+        }
+        
+        // Đồng bộ thời gian với nhiều lần thử
+        async function syncServerTime() {
+            if (syncInProgress) return;
+            syncInProgress = true;
+            offsets = [];
+            
+            try {
+                // Thực hiện nhiều lần sync và lấy trung bình
+                for (let i = 0; i < MAX_SYNC_ATTEMPTS; i++) {
+                    await performSingleSync();
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                }
+                
+                // Loại bỏ outliers và tính trung bình
+                offsets.sort((a, b) => a.rtt - b.rtt);
+                const bestOffsets = offsets.slice(0, 3);
+                const avgOffset = bestOffsets.reduce((sum, o) => sum + o.offset, 0) / bestOffsets.length;
+                const avgRtt = bestOffsets.reduce((sum, o) => sum + o.rtt, 0) / bestOffsets.length;
+                
+                // Cập nhật baseline
+                performanceBaseline = performance.now();
+                serverTimeAtBaseline = Date.now() + avgOffset;
+                serverTimeOffset = avgOffset;
+                
+                updateStatus(true);
+                document.getElementById('precision').textContent = Math.round(avgRtt);
+                console.log('Đồng bộ thành công. Offset:', Math.round(avgOffset), 'ms + Fast Mode: +500ms');
+            } catch (error) {
+                console.error('Lỗi đồng bộ:', error);
+                updateStatus(false);
+            } finally {
+                syncInProgress = false;
+            }
+        }
+        
+        // Một lần sync đơn
+        async function performSingleSync() {
+            return new Promise((resolve, reject) => {
+                const requestStart = performance.now();
+                
+                fetch('https://worldtimeapi.org/api/timezone/Asia/Ho_Chi_Minh', {
+                    cache: 'no-store'
+                })
+                .then(response => {
+                    const requestEnd = performance.now();
+                    return response.json().then(data => ({
+                        data,
+                        responseTime: requestEnd
+                    }));
+                })
+                .then(({data, responseTime}) => {
+                    const rtt = responseTime - requestStart;
+                    const oneWayLatency = rtt / 2;
+                    const serverTime = new Date(data.datetime).getTime();
+                    const clientTime = Date.now();
+                    const offset = serverTime - clientTime + oneWayLatency;
+                    
+                    offsets.push({ offset, rtt });
+                    resolve();
+                })
+                .catch(reject);
+            });
+        }
+        
+        let lastSecond = -1;
+        
+        // Cập nhật hiển thị
+        function updateDisplay() {
+            const now = new Date(getAccurateServerTime());
+            
+            const currentSecond = now.getSeconds();
+            if (currentSecond !== lastSecond) {
+                lastSecond = currentSecond;
+                
+                // Định dạng giờ
+                const hours = String(now.getHours()).padStart(2, '0');
+                const minutes = String(now.getMinutes()).padStart(2, '0');
+                const seconds = String(currentSecond).padStart(2, '0');
+                document.getElementById('time').textContent = `${hours}:${minutes}:${seconds}`;
+                
+                // Định dạng ngày
+                const days = ['Chủ Nhật', 'Thứ Hai', 'Thứ Ba', 'Thứ Tư', 'Thứ Năm', 'Thứ Sáu', 'Thứ Bảy'];
+                const dayName = days[now.getDay()];
+                const day = String(now.getDate()).padStart(2, '0');
+                const month = String(now.getMonth() + 1).padStart(2, '0');
+                const year = now.getFullYear();
+                document.getElementById('date').textContent = `${dayName}, ${day}/${month}/${year}`;
+            }
+            
+            // Cập nhật milliseconds
+            const ms = String(now.getMilliseconds()).padStart(3, '0');
+            document.getElementById('ms').textContent = `.${ms}`;
+            
+            requestAnimationFrame(updateDisplay);
+        }
+        
+        // Cập nhật trạng thái
+        function updateStatus(isOnline) {
+            const statusEl = document.getElementById('status');
+            if (isOnline) {
+                statusEl.textContent = 'Đồng bộ';
+                statusEl.className = 'online';
+            } else {
+                statusEl.textContent = 'Mất kết nối';
+                statusEl.className = 'offline';
+            }
+        }
+        
+        // Phát hiện thay đổi giờ hệ thống
+        let lastCheckTime = Date.now();
+        setInterval(() => {
+            const now = Date.now();
+            const elapsed = now - lastCheckTime;
+            
+            if (Math.abs(elapsed - 1000) > 2000) {
+                console.log('Phát hiện thay đổi giờ hệ thống, đồng bộ lại...');
+                syncServerTime();
+            }
+            
+            lastCheckTime = now;
+        }, 1000);
+        
+        // Khởi động
+        async function init() {
+            await syncServerTime();
+            requestAnimationFrame(updateDisplay);
+            
+            // Đồng bộ lại mỗi 5 phút
+            setInterval(syncServerTime, 5 * 60 * 1000);
+        }
+        
+        init();
+    </script>
+</body>
+</html>
